@@ -1,15 +1,12 @@
 import google.generativeai as genai
 from google.generativeai.types import GenerationConfig
 import os
+from PIL import Image
+import numpy as np
+import io
+import torch
 
-# You might need to import other ComfyUI specific modules if you fully implement
-# media handling, e.g., for image processing:
-# from PIL import Image
-# import numpy as np
-# import io
-# import base64 # If base64 encoding is needed for API
-
-class HGemini25ProNode: # Node class name updated
+class HGemini25ProNode:
     def __init__(self):
         pass
 
@@ -18,27 +15,27 @@ class HGemini25ProNode: # Node class name updated
         return {
             "required": {
                 "prompt": ("STRING", {"multiline": True, "default": ""}),
-                # Updated model list based on the provided free tier image from Google AI rates
                 "model": ([
                     "gemini-2.5-pro",
+                    "gemini-2.5-pro-preview-05-06",
                     "gemini-2.5-flash",
                     "gemini-2.5-flash-lite-preview-06-17",
                     "gemini-2.5-flash-preview-tts",
                     "gemini-2.0-flash",
                     "gemini-2.0-flash-preview-image-generation",
                     "gemini-2.0-flash-lite",
-                    "gemma-3-and-3n"
+                    "gemma-3-12b-it",
+                    "gemma-3-27b-it"
                 ],),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "control_after_generate": (["randomize", "increment", "fixed"],),
                 "api_key": ("STRING", {"multiline": False, "default": "", "secret": True}),
             },
-            "optional": { # Inputs here are not strictly required for the node to run
-                "images": ("IMAGE", {"multiple": True}), # ComfyUI typically passes torch.Tensor for images
+            "optional": {
+                "images": ("IMAGE", {"multiple": True}),
                 "audio": ("AUDIO", {"multiple": True}),
                 "video": ("VIDEO", {"multiple": True}),
                 "files": ("FILE", {"multiple": True}),
-                # Optional generation configuration parameters
                 "temperature": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "max_output_tokens": ("INT", {"default": 1024, "min": 1, "max": 8192}),
                 "top_p": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
@@ -46,13 +43,45 @@ class HGemini25ProNode: # Node class name updated
             }
         }
 
-    RETURN_TYPES = ("STRING",) # The node will output a single string
+    RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("generated_text",)
-    FUNCTION = "generate_content_with_gemini" # The method that ComfyUI will call to execute the node
-    CATEGORY = "My AI/Google Gemini" # Category in ComfyUI's node menu
+    FUNCTION = "generate_content_with_gemini"
+    CATEGORY = "My AI/Google Gemini"
+
+    def tensor_to_pil(self, tensor):
+        """Convert ComfyUI tensor to PIL Image"""
+        # ComfyUI tensors are usually in format [batch, height, width, channels]
+        # and values are typically in range [0, 1]
+        if isinstance(tensor, torch.Tensor):
+            # Convert to numpy and ensure it's in the right format
+            np_image = tensor.cpu().numpy()
+            
+            # Handle different tensor shapes
+            if len(np_image.shape) == 4:  # [batch, height, width, channels]
+                np_image = np_image[0]  # Take first image from batch
+            elif len(np_image.shape) == 3 and np_image.shape[0] == 3:  # [channels, height, width]
+                np_image = np_image.transpose(1, 2, 0)  # Convert to [height, width, channels]
+            
+            # Convert from [0, 1] to [0, 255]
+            if np_image.max() <= 1.0:
+                np_image = (np_image * 255).astype(np.uint8)
+            else:
+                np_image = np_image.astype(np.uint8)
+            
+            # Handle grayscale
+            if len(np_image.shape) == 2:
+                np_image = np.stack([np_image] * 3, axis=-1)
+            
+            # Ensure we have 3 channels (RGB)
+            if np_image.shape[-1] == 4:  # RGBA
+                np_image = np_image[:, :, :3]  # Remove alpha channel
+            
+            return Image.fromarray(np_image)
+        else:
+            raise ValueError(f"Unsupported tensor type: {type(tensor)}")
 
     def generate_content_with_gemini(self, prompt, model, seed, control_after_generate, api_key,
-                                      images=None, audio=None, video=None, files=None, # Ensure optional inputs default to None
+                                      images=None, audio=None, video=None, files=None,
                                       temperature=0.7, max_output_tokens=1024, top_p=1.0, top_k=40):
         # 1. API Key Configuration
         if not api_key:
@@ -68,14 +97,7 @@ class HGemini25ProNode: # Node class name updated
         # 2. Map Display Model Name to Actual API Model Name
         api_model_name = model
         if model == "gemma-3-and-3n":
-            # !!! IMPORTANT !!!
-            # Verify the exact API model name for Gemma 3 & 3n from Google's official documentation.
-            # This is a placeholder and might need to be adjusted (e.g., "models/gemma-3b-it").
-            api_model_name = "models/gemma-3b" # PLACEHOLDER - VERIFY THIS STRING
-        # Add more mappings here if any other display name doesn't match the API name directly
-        # elif model == "some-other-display-name":
-        #     api_model_name = "actual-api-model-name"
-
+            api_model_name = "models/gemma-3b"
 
         # 3. Initialize the Model
         try:
@@ -88,40 +110,44 @@ class HGemini25ProNode: # Node class name updated
         # 4. Prepare Content for the Model
         contents = [prompt]
 
-        # --- CONCEPTUAL MEDIA HANDLING ---
-        # The following blocks are placeholders. You will need to implement the actual logic
-        # to convert ComfyUI's input data (e.g., PyTorch Tensors for images) into
-        # a format compatible with the Google Gemini API (e.g., bytes with MIME type).
-
+        # --- IMPLEMENTED IMAGE HANDLING ---
         if images is not None:
-            print("HGemini25ProNode: Detected image input. Actual image processing logic needs to be implemented here.")
-            # Example conceptual conversion:
-            # for img_tensor in images:
-            #     # Convert ComfyUI tensor to PIL Image (requires PIL, numpy)
-            #     i = 255. * img_tensor.cpu().numpy()
-            #     img_pil = Image.fromarray(i.astype(np.uint8))
-            #
-            #     # Convert PIL Image to bytes in a suitable format (e.g., JPEG or PNG)
-            #     byte_arr = io.BytesIO()
-            #     img_pil.save(byte_arr, format='PNG') # Or 'JPEG'
-            #     contents.append({'mime_type': 'image/png', 'data': byte_arr.getvalue()})
-            #
-            # You might need to check if the model supports image input (e.g., gemini-2.0-flash-preview-image-generation)
-            # or if the image content is part of a multi-turn conversation.
+            print("HGemini25ProNode: Processing image inputs...")
+            try:
+                # Handle single image or multiple images
+                if not isinstance(images, list):
+                    images = [images]
+                
+                for img_tensor in images:
+                    # Convert ComfyUI tensor to PIL Image
+                    img_pil = self.tensor_to_pil(img_tensor)
+                    
+                    # Convert PIL Image to bytes in PNG format
+                    byte_arr = io.BytesIO()
+                    img_pil.save(byte_arr, format='PNG')
+                    byte_arr.seek(0)
+                    
+                    # Add image to contents in the format expected by Gemini API
+                    contents.append({
+                        'mime_type': 'image/png',
+                        'data': byte_arr.getvalue()
+                    })
+                    
+                print(f"HGemini25ProNode: Successfully processed {len(images)} image(s)")
+                
+            except Exception as e:
+                print(f"HGemini25ProNode: Error processing images: {e}")
+                return (f"Error processing images: {e}",)
 
+        # Audio, video, and file handling remain as placeholders
         if audio is not None:
             print("HGemini25ProNode: Detected audio input. Audio handling not implemented yet.")
-            # Similar to images, you'd read audio data and format it for the API.
 
         if video is not None:
             print("HGemini25ProNode: Detected video input. Video handling not implemented yet.")
-            # Similar to images, you'd read video data and format it for the API.
 
         if files is not None:
             print("HGemini25ProNode: Detected generic file input. File handling not implemented yet.")
-            # Similar to images, you'd read file data and format it for the API.
-        # --- END OF CONCEPTUAL MEDIA HANDLING ---
-
 
         # 5. Set up Generation Configuration
         generation_config = GenerationConfig(
@@ -137,18 +163,16 @@ class HGemini25ProNode: # Node class name updated
             response = generation_model.generate_content(
                 contents,
                 generation_config=generation_config,
-                safety_settings=[ # These settings try to reduce content blocking
+                safety_settings=[
                     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
                     {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
                     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
                 ]
             )
-            # Access the generated text
             generated_text = response.text
             print("HGemini25ProNode: Content generation successful.")
         except Exception as e:
-            # Handle API errors (rate limits, invalid API key, content moderation, etc.)
             generated_text = f"Error generating content: {e}"
             print(f"HGemini25ProNode: Error calling Gemini API: {e}")
 
